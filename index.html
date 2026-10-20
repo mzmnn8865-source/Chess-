@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>دستیار شطرنج رفقا</title>
+    <!-- کتابخانه صفحه شطرنج -->
+    <link rel="stylesheet" href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
+    <style>
+        * { box-sizing: border-box; }
+        body { 
+            font-family: Tahoma, sans-serif; 
+            background: #0e1116; 
+            color: #f0f2f5; 
+            margin: 0; 
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        h1 { font-size: 22px; margin-bottom: 5px; color: #f0873a; }
+        .hint { font-size: 12px; opacity: 0.6; margin-bottom: 20px; }
+        .container { display: flex; gap: 20px; flex-wrap: wrap; justify-content: center; width: 100%; max-width: 1200px; }
+        .panel { flex: 1; min-width: 320px; background: #1a1f2e; padding: 15px; border-radius: 12px; }
+        #myBoard { width: 100%; max-width: 450px; margin: 0 auto; }
+        #bestMove { 
+            background: linear-gradient(135deg, #4d5e94, #7d8eb5);
+            padding: 15px; 
+            border-radius: 12px; 
+            text-align: center; 
+            margin-bottom: 15px;
+        }
+        #bestMoveLabel { font-size: 12px; opacity: 0.9; }
+        #bestMoveValue { font-size: 32px; font-weight: bold; color: #f0873a; margin-top: 5px; }
+        #status { padding: 10px; background: #0e1116; border-radius: 8px; margin-bottom: 10px; text-align: center; font-size: 14px; }
+        .controls { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 15px; justify-content: center; }
+        button { 
+            padding: 8px 16px; 
+            background: #4d5e94; 
+            color: white; 
+            border: none; 
+            border-radius: 8px; 
+            cursor: pointer; 
+            font-size: 13px;
+            font-weight: bold;
+        }
+        button:hover { background: #7d8eb5; }
+        button.danger { background: #c9635d; }
+        iframe { 
+            width: 100%; 
+            height: 600px; 
+            border: none; 
+            border-radius: 12px; 
+            background: white;
+        }
+        .iframe-warning { font-size: 11px; color: #c9635d; margin-bottom: 8px; }
+    </style>
+</head>
+<body>
+    <h1>♟️ دستیار شطرنج رفقا</h1>
+    <p class="hint">حرکت رفیقت رو روی صفحه بکش، من بهت میگم چی بازی کنی!</p>
+    
+    <div class="container">
+        <!-- ستون چپ: صفحه و هوش مصنوعی -->
+        <div class="panel">
+            <div id="bestMove">
+                <div id="bestMoveLabel">حرکت پیشنهادی (تو اینو بازی کن)</div>
+                <div id="bestMoveValue">-</div>
+            </div>
+            <div id="status">در حال بارگذاری...</div>
+            <div id="myBoard"></div>
+            <div class="controls">
+                <button onclick="newGame()">شروع جدید</button>
+                <button onclick="undoMove()">برگرداندن</button>
+                <button onclick="flipBoard()">چرخش</button>
+                <button class="danger" onclick="askAI()">تحلیل</button>
+            </div>
+        </div>
+        
+        <!-- ستون راست: سایت رفیقت -->
+        <div class="panel">
+            <p class="iframe-warning">⚠️ اگر سایت رفیقت اینجا باز نشد، یعنی اجازه iframe نمیده. باید توی تب جدا بازش کنی.</p>
+            <iframe id="friendSite" src="about:blank"></iframe>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+    <script>
+        let board = null;
+        let game = new Chess();
+
+        // ۱. آپدیت وضعیت صفحه
+        function updateStatus() {
+            const status = document.getElementById('status');
+            if (game.game_over()) {
+                if (game.in_checkmate()) {
+                    status.textContent = game.turn() === 'w' ? '🏆 سیاه مات کرد! (تو باختی)' : '🏆 سفید مات کرد! (تو بردی)';
+                } else if (game.in_draw()) {
+                    status.textContent = '🤝 مساوی شد';
+                }
+                return;
+            }
+            const turn = game.turn() === 'w' ? 'سفید (رفیقت)' : 'سیاه (تو)';
+            const check = game.in_check() ? ' - کیش!' : '';
+            status.textContent = `نوبت: ${turn}${check}`;
+        }
+
+        // ۲. وقتی مهره‌ای روی صفحه جابجا میشه
+        function onDrop(source, target) {
+            const move = game.move({ from: source, to: target, promotion: 'q' });
+            if (move === null) return 'snapback'; // حرکت غیرمجاز
+            
+            updateStatus();
+            setTimeout(askAI, 100); // ۱۰۰ میلی‌ثانیه صبر میکنه بعد تحلیل میکنه
+        }
+
+        function onSnapEnd() {
+            board.position(game.fen());
+        }
+
+        // ۳. پرسیدن از هوش مصنوعی (Lichess Cloud API)
+        async function askAI() {
+            if (game.game_over()) return;
+            
+            const bestEl = document.getElementById('bestMoveValue');
+            bestEl.textContent = '... در حال فکر کردن';
+            
+            const fen = game.fen();
+            try {
+                // API فوق‌قوی Lichess (استاک‌فیش واقعی)
+                const res = await fetch(`https://lichess.org/api/cloud-eval?fen=${encodeURIComponent(fen)}&multiPv=1`);
+                
+                if (!res.ok) throw new Error('Lichess error');
+                const data = await res.json();
+                
+                if (data.pvs && data.pvs[0] && data.pvs[0].moves) {
+                    const bestUci = data.pvs[0].moves.split(' ')[0]; // مثلا e2e4
+                    const bestSan = convertUciToSan(fen, bestUci);    // مثلا e4
+                    bestEl.textContent = bestSan;
+                } else {
+                    // اگه Lichess وضعیت رو بلد نبود، از stockfish.online استفاده کن
+                    const res2 = await fetch(`https://stockfish.online/api/s/v2.php?fen=${encodeURIComponent(fen)}&depth=15`);
+                    const data2 = await res2.json();
+                    if (data2.success && data2.bestmove) {
+                        const bestUci = data2.bestmove.split(' ')[1];
+                        bestEl.textContent = convertUciToSan(fen, bestUci);
+                    } else {
+                        bestEl.textContent = 'تحلیل نشد';
+                    }
+                }
+            } catch (e) {
+                bestEl.textContent = 'خطا در اتصال';
+            }
+        }
+
+        // ۴. تبدیل کد UCI (e2e4) به SAN (e4) برای خوانایی
+        function convertUciToSan(fen, uci) {
+            try {
+                const tempGame = new Chess(fen);
+                const from = uci.substring(0, 2);
+                const to = uci.substring(2, 4);
+                const promo = uci.length > 4 ? uci[4] : undefined;
+                const move = tempGame.move({ from, to, promotion: promo });
+                return move ? move.san : uci;
+            } catch (e) {
+                return uci;
+            }
+        }
+
+        // ۵. دکمه‌های کنترلی
+        function newGame() {
+            game = new Chess();
+            board.start();
+            document.getElementById('bestMoveValue').textContent = '-';
+            updateStatus();
+        }
+
+        function undoMove() {
+            game.undo(); // حرکت چریف رو برمی‌گردونه
+            game.undo(); // حرکت خودت رو هم برمی‌گردونه (چون دو تا حرکت اخیر مربوط به جفتتون بوده)
+            board.position(game.fen());
+            updateStatus();
+            document.getElementById('bestMoveValue').textContent = '-';
+        }
+
+        function flipBoard() {
+            board.flip();
+        }
+
+        // ۶. راه‌اندازی اولیه
+        document.addEventListener('DOMContentLoaded', () => {
+            board = Chessboard('myBoard', {
+                draggable: true,
+                position: 'start',
+                onDrop: onDrop,
+                onSnapEnd: onSnapEnd,
+                pieceTheme: 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png'
+            });
+            
+            // آدرس سایت رفیقت رو اینجا بذار (اگه iframe اجازه داد):
+            // document.getElementById('friendSite').src = 'https://آدرس-سایت-رفیقت.com';
+            
+            updateStatus();
+            window.addEventListener('resize', () => board.resize());
+        });
+    </script>
+</body>
+</html>
